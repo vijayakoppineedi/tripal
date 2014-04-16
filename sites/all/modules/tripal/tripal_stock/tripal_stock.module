@@ -1,0 +1,528 @@
+<?php
+/**
+ * @file
+ * Basic functionality for stocks
+ */
+
+require_once 'api/tripal_stock.api.inc';
+require_once 'api/tripal_stock.DEPRECATED.inc';
+
+require_once 'theme/tripal_stock.theme.inc';
+
+require_once 'includes/tripal_stock.admin.inc';
+require_once 'includes/tripal_stock.chado_node.inc';
+
+/**
+ * @defgroup tripal_stock Stock Module
+ * @ingroup tripal_modules
+ * @{
+ * Integrates the Chado Stock module with Drupal Nodes & Views
+ *
+ * The Tripal Stock Module provides functionality for adding, editing, deleting and accessing chado
+ * stocks. The stock module was designed to store information about stock collections in a
+ * laboratory. What is called a stock could also be called a strain or an accession. There is a lot
+ * in common between a Drosophila stock and a Saccharomyces strain and an Arabidopsis line. They all
+ * come from some taxon, have genotypes, physical locations in the lab, some conceivable
+ * relationship with a publication, some conceivable relationship with a sequence feature (such as a
+ * transgene), and could be described by some ontology term. For more information about the chado
+ * Stock Module see the GMOD Wiki Page (http://gmod.org/wiki/Chado_Stock_Module)
+ * @}
+ */
+
+/**
+ * Implements hook_menu().
+ * Adds menu items for the tripal_stock
+ *
+ * @return
+ *   Menu definitions for the tripal_stock
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_menu() {
+  $items = array();
+
+  // the menu link for addressing any stock (by name, uniquename, synonym)
+  $items['stock/%'] = array(
+    'page callback' => 'tripal_stock_match_stocks_page',
+    'page arguments' => array(1),
+    'access arguments' => array('access chado_stock content'),
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  //Administrative settings menu-----------------
+  $items['admin/tripal/chado/tripal_stock'] = array(
+    'title' => 'Stocks',
+    'description' => 'A stock is the physical entities of an organism, either living or preserved.',
+    'page callback' => 'tripal_stock_admin_stock_view',
+    'access arguments' => array('administer tripal stock'),
+    'type' => MENU_NORMAL_ITEM
+  );
+
+  $items['admin/tripal/chado/tripal_stock/configuration'] = array(
+    'title' => 'Settings',
+    'description' => 'Settings for Chado Stocks',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('tripal_stock_admin'),
+    'access arguments' => array('administer tripal stock'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 5
+  );
+
+  $items['admin/tripal/chado/tripal_stock/sync'] = array(
+    'title' => ' Sync',
+    'description' => 'Sync stocks from Chado with Drupal',
+    'page callback' => 'drupal_get_form',
+    //'page arguments' => array('tripal_stock_sync_form'),
+    'page arguments' => array('chado_node_sync_form', 'tripal_stock', 'chado_stock'),
+    'access arguments' => array('administer tripal stock'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 0
+  );
+
+  $items['admin/tripal/chado/tripal_stock/help'] = array(
+    'title' => 'Help',
+    'description' => 'Basic Description of Tripal Stock Module Functionality',
+    'page callback' => 'theme',
+    'page arguments' => array('tripal_stock_help'),
+    'access arguments' => array('administer tripal stock'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10
+  );
+
+
+  return $items;
+}
+
+/**
+ * Implements Menu wildcard_load hook
+ *
+ * Allows the node ID of a chado stock to be dynamically
+ *   pulled from the path. The node is loaded from this node ID
+ *   and supplied to the page as an arguement. This is an example
+ *   of dynamic argument replacement using wildcards in the path.
+ *
+ * @param $nid
+ *   The node ID passed in from the path
+ *
+ * @return
+ *   The node object with the passed in nid
+ *
+ * @ingroup tripal_stock
+ */
+function cs_node_load($nid) {
+  if (is_numeric($nid)) {
+    $node = node_load($nid);
+    if ($node->type == 'chado_stock') {
+      return $node;
+    }
+  }
+
+  return FALSE;
+}
+
+/**
+ * Implements hook_permission().
+ * Set the permission types that the chado stock module uses
+ *
+ * @return
+ *   Listing of the possible permission catagories
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_permission() {
+  return array(
+    'access chado_stock content' => array(
+      'title' => t('View Stocks'),
+      'description' => t('Allow users to view stock pages.'),
+    ),
+    'create chado_stock content' => array(
+      'title' => t('Create Stocks'),
+      'description' => t('Allow users to create new stock pages.'),
+    ),
+    'delete chado_stock content' => array(
+      'title' => t('Delete Stocks'),
+      'description' => t('Allow users to delete stock pages.'),
+    ),
+    'edit chado_stock content' => array(
+      'title' => t('Edit Stocks'),
+      'description' => t('Allow users to edit stock pages.'),
+    ),
+    'adminster tripal stock' => array(
+      'title' => t('Administer Stocks'),
+      'description' => t('Allow users to administer all stocks.'),
+    ),
+  );
+}
+
+/**
+ * Implement hook_node_access().
+ *
+ * This hook allows node modules to limit access to the node types they define.
+ *
+ *  @param $node
+ *  The node on which the operation is to be performed, or, if it does not yet exist, the
+ *  type of node to be created
+ *
+ *  @param $op
+ *  The operation to be performed
+ *
+ *  @param $account
+ *  A user object representing the user for whom the operation is to be performed
+ *
+ *  @return
+ *  If the permission for the specified operation is not set then return FALSE. If the
+ *  permission is set then return NULL as this allows other modules to disable
+ *  access.  The only exception is when the $op == 'create'.  We will always
+ *  return TRUE if the permission is set.
+ *
+ * @ingroup tripal_stock
+ */
+function chado_stock_node_access($node, $op, $account) {
+  if ($op == 'create') {
+    if (!user_access('create chado_stock content', $account)) {
+      return FALSE;
+    }
+    return TRUE;
+  }
+  if ($op == 'update') {
+    if (!user_access('edit chado_stock content', $account)) {
+      return FALSE;
+    }
+  }
+  if ($op == 'delete') {
+    if (!user_access('delete chado_stock content', $account)) {
+      return FALSE;
+    }
+  }
+  if ($op == 'view') {
+    if (!user_access('access chado_stock content', $account)) {
+      return FALSE;
+    }
+  }
+  return NULL;
+}
+
+/**
+ * Implements hook_views_api().
+ *
+ * Purpose: Essentially this hook tells drupal that there is views support for
+ *  for this module which then includes tripal_stock.views.inc where all the
+ *  views integration code is
+ *
+ * @return
+ *   An array with fields important for views integration
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_views_api() {
+  return array(
+    'api' => 3.0,
+  );
+}
+
+/**
+ * Implements hook_theme().
+ * Register themeing functions for this module
+ *
+ * @return
+ *   An array of themeing functions to register
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_theme($existing, $type, $theme, $path) {
+  $core_path = drupal_get_path('module', 'tripal_core');
+
+  $items = array(
+
+    // property edit forms function templates
+    'tripal_stock_edit_ALL_properties_form' => array(
+      'variables' => array('form'),
+      'function' => 'theme_tripal_stock_edit_ALL_properties_form',
+    ),
+    'tripal_stock_edit_ALL_db_references_form' => array(
+      'variables' => array('form'),
+      'function' => 'theme_tripal_stock_edit_ALL_db_references_form',
+    ),
+    'tripal_stock_edit_ALL_relationships_form' => array(
+      'variables' => array('form'),
+      'function' => 'theme_tripal_stock_edit_ALL_relationships_form',
+    ),
+
+    // tripal_stock templates
+    'node__chado_stock' => array(
+      'template' => 'node--chado-generic',
+      'render element' => 'node',
+      'base hook' => 'node',
+      'path' => "$core_path/theme",
+    ),
+    'tripal_stock_base' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_base',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_properties' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_properties',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_publications' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_publications',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_references' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_references',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_relationships' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_relationships',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_synonyms' => array(
+      'arguments' => array('node' => NULL),
+      'template' => 'tripal_stock_synonyms',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_collections' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_collections',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_collections' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_collections',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_phenotypes' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_phenotypes',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    'tripal_stock_locations' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_stock_locations',
+      'path' => "$path/theme/tripal_stock",
+    ),
+    // tripal_organism templates
+    'tripal_organism_stocks' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_organism_stocks',
+      'path' => "$path/theme/tripal_organism",
+    ),
+    // help template
+    'tripal_stock_help' => array(
+      'template' => 'tripal_stock_help',
+      'variables' =>  array(NULL),
+      'path' => "$path/theme/",
+    ),
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_help().
+ * Adds a help page to the module list
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_help ($path, $arg) {
+  if ($path == 'admin/help#tripal_stock') {
+    return theme('tripal_stock_help', array());
+  }
+}
+
+/**
+ * Implements hook_block_info().
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_block_info() {
+  $blocks['base']['info'] = t('Tripal Stock Details');
+  $blocks['base']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['properties']['info'] = t('Tripal Stock Properties');
+  $blocks['properties']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['references']['info'] = t('Tripal Stock References');
+  $blocks['references']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['relationships_as_object']['info'] = t('Tripal Stock Relationships');
+  $blocks['relationships_as_object']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['synonyms']['info'] = t('Tripal Stock Synonyms');
+  $blocks['synonyms']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['collections']['info'] = t('Tripal Stock Collections');
+  $blocks['collections']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['phenotypes']['info'] = t('Tripal Stock Phenotypes');
+  $blocks['phenotypes']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['genotypes']['info'] = t('Tripal Stock Genotypes');
+  $blocks['genotypes']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['locations']['info'] = t('Tripal Stock Locations');
+  $blocks['locations']['cache'] = 'BLOCK_NO_CACHE';
+
+  $blocks['orgstocks']['info'] = t('Tripal Organism Stocks');
+  $blocks['orgstocks']['cache'] = 'BLOCK_NO_CACHE';
+
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_block_view($delta = '') {
+
+  if (user_access('access chado_stock content') and arg(0) == 'node' and is_numeric(arg(1))) {
+    $nid = arg(1);
+    $node = node_load($nid);
+
+    $block = array();
+    switch ($delta) {
+      case 'base':
+        $block['subject'] = t('Stock Details');
+        $block['content'] = theme('tripal_stock_base', $node);
+        break;
+
+      case 'properties':
+        $block['subject'] = t('Properties');
+        $block['content'] = theme('tripal_stock_properties', $node);
+        break;
+
+      case 'references':
+        $block['subject'] = t('References');
+        $block['content'] = theme('tripal_stock_references', $node);
+        break;
+
+      case 'relationships':
+        $block['subject'] = t('Relationships');
+        $block['content'] = theme('tripal_stock_relationships', $node);
+        break;
+
+      case 'synonyms':
+        $block['subject'] = t('Synonyms');
+        $block['content'] = theme('tripal_stock_synonyms', $node);
+        break;
+
+      case 'collections':
+        $block['subject'] = t('Stock Collections');
+        $block['content'] = theme('tripal_stock_collections', $node);
+        break;
+
+      case 'phenotypes':
+        $block['subject'] = t('Stock Phenotypes');
+        $block['content'] = theme('tripal_stock_phenotypes', $node);
+        break;
+
+      case 'genotypes':
+        $block['subject'] = t('Stock Genotypes');
+        $block['content'] = theme('tripal_stock_genotypes', $node);
+        break;
+
+      case 'locations':
+        $block['subject'] = t('Stock Locations');
+        $block['content'] = theme('tripal_stock_locations', $node);
+        break;
+
+      case 'orgstocks':
+        $block['subject'] = t('Organism Stocks');
+        $block['content'] = theme('tripal_organism_stocks', $node);
+        break;
+
+    }
+    return $block;
+  }
+}
+
+/*
+ * Uses the value provided in the $id argument to find all stocks that match
+ * that ID by name, stockname or synonym.  If it matches uniquenly to a single
+ * stock it will redirect to that stock page, otherwise, a list of matching
+ * stocks is shown.
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_match_stocks_page($id) {
+
+  // if the URL alias configuration is set such that the URL
+  // always begins with 'stock' then we want to use the ID as it is and
+  // forward it on. Otherwise, try to find the matching stock.
+  $url_alias = variable_get('chado_stock_url_string', '/stock/[genus]/[species]/[type]/[uniquename]');
+  if (!$url_alias) {
+    $url_alias = '/stock/[genus]/[species]/[type]/[uniquename]';
+  }
+  $url_alias = preg_replace('/^\//', '', $url_alias); // remove any preceeding forward slash
+  if (preg_match('/^stock\//', $url_alias)) {
+    drupal_goto($id);
+  }
+
+  $sql = "
+    SELECT
+      S.name, S.uniquename, S.stock_id,
+      O.genus, O.species, O.organism_id,
+      CVT.cvterm_id, CVT.name as type_name,
+      CS.nid
+    FROM {stock} S
+      INNER JOIN {organism} O on S.organism_id = O.organism_id
+      INNER JOIN {cvterm} CVT on CVT.cvterm_id = S.type_id
+      INNER JOIN public.chado_stock CS on CS.stock_id = S.stock_id
+    WHERE
+      S.uniquename = :uname or S.name = :name
+  ";
+  $results = chado_query($sql, array(':uname' => $id, ':name' => $id));
+
+  $num_matches = 0;
+
+  // iterate through the matches and build the table for showing matches
+  $header = array('Uniquename', 'Name', 'Type', 'Species');
+  $rows = array();
+  $curr_match;
+  while ($match = $results->fetchObject()) {
+    $curr_match = $match;
+    $rows[] = array(
+       $match->uniquename,
+       "<a href=\"" . url("node/". $match->nid) ."\">" . $match->name . "</a>",
+       $match->type_name,
+       '<i>' . $match->genus . ' ' . $match->species . '</i>',
+    );
+    $num_matches++;
+  }
+
+  // if we have more than one match then generate the table, otherwise, redirect
+  // to the matched stock
+  if ($num_matches == 1) {
+    drupal_goto("node/" . $curr_match->nid);
+  }
+  if ($num_matches == 0) {
+    return "<p>No stocks matched the given name '$id'</p>";
+  }
+
+  $table_attrs = array(
+    'class' => 'tripal-table tripal-table-horz'
+  );
+  $output = "<p>The following stocks match the name '$id'.</p>";
+  $output .= theme_table($header, $rows, $table_attrs, $caption);
+  return $output;
+}
+
+/**
+ * Implementation of hook_form_alter().
+ *
+ * @param $form
+ * @param $form_state
+ * @param $form_id
+ *
+ * @ingroup tripal_stock
+ */
+function tripal_stock_form_alter(&$form, &$form_state, $form_id) {
+  // turn of preview button for insert/updates
+  if ($form_id == "chado_stock_node_form") {
+    $form['actions']['preview']['#access'] = FALSE;
+  }
+}

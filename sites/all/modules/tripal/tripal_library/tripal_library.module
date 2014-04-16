@@ -1,0 +1,321 @@
+<?php
+/**
+ * @file
+ * Integrates the Chado Library module with Drupal Nodes & Views
+ */
+
+/**
+ * @defgroup tripal_library Library Module
+ * @ingroup tripal_modules
+ * @{
+ * Integrates the Chado Library module with Drupal Nodes & Views
+ * @}
+ */
+
+require_once 'api/tripal_library.DEPRECATED.inc';
+
+require_once 'theme/tripal_library.theme.inc';
+
+require_once 'includes/tripal_library.admin.inc';
+require_once 'includes/tripal_library.chado_node.inc';
+
+/**
+ * Implements hook_permission().
+ *
+ * Set the permission types that the chado module uses.  Essentially we
+ * want permissionis that protect creation, editing and deleting of chado
+ * data objects
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_permisssion() {
+  return array(
+    'access chado_library content' => array(
+      'title' => t('View Libraries'),
+      'description' => t('Allow users to view library pages.'),
+    ),
+    'create chado_library content' => array(
+      'title' => t('Create Libraries'),
+      'description' => t('Allow users to create new library pages.'),
+    ),
+    'delete chado_library content' => array(
+      'title' => t('Delete Libraries'),
+      'description' => t('Allow users to delete library pages.'),
+    ),
+    'edit chado_library content' => array(
+      'title' => t('Edit Libraries'),
+      'description' => t('Allow users to edit library pages.'),
+    ),
+    'adminster tripal library' => array(
+      'title' => t('Administer Libraries'),
+      'description' => t('Allow users to administer all libraries.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ *
+ * Menu items are automatically added for the new node types created
+ * by this module to the 'Create Content' Navigation menu item.  This function
+ * adds more menu items needed for this module.
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_menu() {
+  $items = array();
+  // The administative settings menu
+  $items['admin/tripal/chado/tripal_library'] = array(
+    'title' => 'Libraries',
+    'description' => 'Any biological library. Examples of genomic libraries include BAC, cDNA, FOSMID, etc.',
+    'page callback' => 'tripal_library_admin_libraries_listing',
+    'access arguments' => array('administer tripal library'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['admin/tripal/chado/tripal_library/help'] = array(
+    'title' => 'Help',
+    'description' => 'Basic Description of Tripal Library Module Functionality',
+    'page callback' => 'theme',
+    'page arguments' => array('tripal_library_help'),
+    'access arguments' => array('administer tripal library'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10
+  );
+
+  $items['admin/tripal/chado/tripal_library/configuration'] = array(
+    'title' => 'Settings',
+    'description' => 'Configure the Tripal Library module',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('tripal_library_admin'),
+    'access arguments' => array('administer tripal library'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 5
+  );
+  $items['admin/tripal/chado/tripal_library/sync'] = array(
+    'title' => ' Sync',
+    'description' => 'Create pages on this site for libraries stored in Chado',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('chado_node_sync_form', 'tripal_library', 'chado_library'),
+    'access arguments' => array('administer tripal library'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 2
+  );
+
+  $items['admin/tripal/chado/tripal_library/views/libraries/enable'] = array(
+    'title' => 'Enable Library Administrative View',
+    'page callback' => 'tripal_views_admin_enable_view',
+    'page arguments' => array('tripal_library_admin_libraries', 'admin/tripal/chado/tripal_library'),
+    'access arguments' => array('administer tripal library'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_views_api().
+ *
+ * Essentially this hook tells drupal that there is views support for
+ *  for this module which then includes tripal_db.views.inc where all the
+ *  views integration code is
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_views_api() {
+  return array(
+    'api' => 3.0,
+  );
+}
+
+/**
+ *  Implements hook_theme().
+ *
+ * We need to let drupal know about our theme functions and their arguments.
+ *  We create theme functions to allow users of the module to customize the
+ *  look and feel of the output generated in this module
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_theme($existing, $type, $theme, $path) {
+  $core_path = drupal_get_path('module', 'tripal_core');
+
+  $items = array(
+    'node__chado_library' => array(
+      'template' => 'node--chado-generic',
+      'render element' => 'node',
+      'base hook' => 'node',
+      'path' => "$core_path/theme",
+    ),
+
+    // tripal_library templates
+    'tripal_library_base' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_library_base',
+      'path' => "$path/theme/tripal_library",
+    ),
+    'tripal_library_properties' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_library_properties',
+      'path' => "$path/theme/tripal_library",
+    ),
+    'tripal_library_publications' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_library_publications',
+      'path' => "$path/theme/tripal_library",
+    ),
+    'tripal_library_references' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_library_references',
+      'path' => "$path/theme/tripal_library",
+    ),
+    'tripal_library_synonyms' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_library_synonyms',
+      'path' => "$path/theme/tripal_library",
+    ),
+    'tripal_library_terms' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_library_terms',
+      'path' => "$path/theme/tripal_library",
+    ),
+    'tripal_library_help' => array(
+      'template' => 'tripal_library_help',
+      'variables' =>  array(NULL),
+      'path' => "$path/theme",
+    ),
+
+    // teaser
+    'tripal_library_teaser' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_library_teaser',
+      'path' => "$path/theme/tripal_library",
+    ),
+
+    // tripal_organism templates
+    'tripal_organism_libraries' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_organism_libraries',
+      'path' => "$path/theme/tripal_organism",
+    ),
+
+    // tripal_feature templates
+    'tripal_feature_libraries' => array(
+      'variables' => array('node' => NULL),
+      'template' => 'tripal_feature_libraries',
+      'path' => "$path/theme/tripal_feature",
+    ),
+
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_help().
+ * Adds a help page to the module list
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_help ($path, $arg) {
+  if ($path == 'admin/help#tripal_library') {
+    return theme('tripal_library_help', array());
+  }
+}
+
+/**
+ * Implements hook_block_info().
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_block_info() {
+
+  $blocks['libreferences']['info'] = t('Tripal Library Cross References');
+  $blocks['libreferences']['cache'] = DRUPAL_NO_CACHE;
+
+  $blocks['libbase']['info'] = t('Tripal Library Details');
+  $blocks['libbase']['cache'] = DRUPAL_NO_CACHE;
+
+  $blocks['libterms']['info'] = t('Tripal Library Terms');
+  $blocks['libterms']['cache'] = DRUPAL_NO_CACHE;
+
+  $blocks['libsynonyms']['info'] = t('Tripal Library Synonyms');
+  $blocks['libsynonyms']['cache'] = DRUPAL_NO_CACHE;
+
+  $blocks['libproperties']['info'] = t('Tripal Library Properties');
+  $blocks['libproperties']['cache'] = DRUPAL_NO_CACHE;
+
+  $blocks['featurelibs']['info'] = t('Tripal Feature Libraries');
+  $blocks['featurelibs']['cache'] = DRUPAL_NO_CACHE;
+
+  $blocks['orglibs']['info'] = t('Tripal Organism Libraries');
+  $blocks['orglibs']['cache'] = DRUPAL_NO_CACHE;
+
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_block_view($delta = '') {
+
+  if (user_access('access chado_library content') and arg(0) == 'node' and is_numeric(arg(1))) {
+    $nid = arg(1);
+    $node = node_load($nid);
+
+    $block = array();
+    switch ($delta) {
+      case 'libreferences':
+        $block['subject'] = t('Cross References');
+        $block['content'] = theme('tripal_library_references', $node);
+        break;
+      case 'libbase':
+        $block['subject'] = t('Library Details');
+        $block['content'] = theme('tripal_library_base', $node);
+        break;
+      case 'libsynonyms':
+        $block['subject'] = t('Synonyms');
+        $block['content'] = theme('tripal_library_synonyms', $node);
+        break;
+      case 'libproperties':
+        $block['subject'] = t('Properties');
+        $block['content'] = theme('tripal_library_properties', $node);
+        break;
+      case 'libterms':
+        $block['subject'] = t('Library Terms');
+        $block['content'] = theme('tripal_library_terms', $node);
+        break;
+      case 'featurelibs':
+        $block['subject'] = t('Libraries');
+        $block['content'] = theme('tripal_feature_libraries', $node);
+        break;
+      case 'orglibs':
+        $block['subject'] = t('Libraries');
+        $block['content'] = theme('tripal_organism_libraries', $node);
+        break;
+      default :
+    }
+    return $block;
+  }
+}
+
+/**
+ * Implementation of hook_form_alter().
+ *
+ * @param $form
+ * @param $form_state
+ * @param $form_id
+ *
+ * @ingroup tripal_library
+ */
+function tripal_library_form_alter(&$form, &$form_state, $form_id) {
+
+  if ($form_id == "chado_library_node_form") {
+    // turn of preview button for insert/updates
+    $form['actions']['preview']['#access'] = FALSE;
+
+    //remove the body field
+    unset($form['body']);
+  }
+}

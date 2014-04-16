@@ -1,0 +1,486 @@
+<?php
+/**
+ * @file
+ * Provides an application programming interface (API) to manage data withing the Chado database.
+ */
+
+require_once 'tripal_core.schema_v1.2.api.inc';
+require_once 'tripal_core.schema_v1.11.api.inc';
+
+/**
+ * @defgroup tripal_chado_api Chado API
+ * @ingroup tripal_core_api
+ * @{
+ * Provides an application programming interface (API) to manage data withing the Chado database.
+ *
+ * This includes functions for selecting, inserting, updating and deleting records
+ * in Chado tables.  The functions will ensure proper integrity contraints are met
+ * for inserts and updates.
+ *
+ * Also, a set of functions is provided for creating template variables.  First,
+ * is the tripal_core_generate_chado_vars which is used to select one ore more
+ * records from a table and return an array with foreign key relationships fully
+ * populated.  For example, if selecting a feature, the organism_id and type_id
+ * would be present in the returned array as a nested array with their respective
+ * foreign keys also nested.  The only fields that are not included are text
+ * fields (which may be very large) or many-to-many foreign key relationships.
+ * However, these fields and relationships can be expanded using the
+ * chado_expand_var.
+ *
+ * When a row from a chado table is selected using these two functions, it provides
+ * a way for users who want to cutomize Drupal template files to access all data
+ * associate with a specific record.
+ *
+ * Finally, the property tables in Chado generally follow the same format.  Therefore
+ * there is a set of functions for inserting, updating and deleting properties for
+ * any table.  This provides quick lookup of properties (provided the CV term is
+ * known).
+ *
+ * @}
+ *
+ */
+
+/**
+ * Set the Tripal Database
+ *
+ * The chado_set_active function is used to prevent namespace collisions
+ * when chado and drupal are installed in the same database but in different
+ * schemas.  It is also used for backwards compatibility with older versions
+ * of tripal or in cases where chado is located outside of the Drupal database.
+ * or when using Drupal functions such as db_table_exists()
+ *
+ * @ingroup tripal_chado_api
+ */
+function chado_set_active($dbname  = 'default') {
+  global $databases, $active_db;
+
+  if ($dbname ) {
+    if ($dbname == 'chado') {
+      db_query('set search_path to chado,public');
+      return 'default';
+    }
+    else {
+      db_query('set search_path to public');
+      return 'chado';
+    }
+  }
+  // if the 'chado' database is in the $db_url variable then chado is
+  // not in the same Drupal database, so we don't need to set any
+  // search_path and can just change the database
+  elseif (array_key_exists($dbname, $databases)) {
+    return db_set_active($dbname);
+  }
+}
+
+/**
+ * Get max rank for a given set of criteria
+ * This function was developed with the many property tables in chado in mind but will
+ * work for any table with a rank
+ *
+ * @params tablename: the name of the chado table you want to select the max rank from
+ *    this table must contain a rank column of type integer
+ * @params where_options: array(
+ *                          <column_name> => array(
+ *                            'type' => <type of column: INT/STRING>,
+ *                            'value' => <the value you want to filter on>,
+ *                            'exact' => <if TRUE use =; if FALSE use ~>,
+ *                          )
+ *        )
+ *     where options should include the id and type for that table to correctly
+ *     group a set of records together where the only difference are the value and rank
+ * @return the maximum rank
+ *
+ * @ingroup tripal_chado_api
+ */
+function chado_get_table_max_rank($tablename, $where_options) {
+
+  $where_clauses = array();
+  $where_args = array();
+
+  //generate the where clause from supplied options
+  // the key is the column name
+  $i = 0;
+  $sql = "
+    SELECT max(rank) as max_rank, count(rank) as count
+    FROM {".$tablename."}
+    WHERE
+  ";
+  foreach ($where_options as $key => $value) {
+    $where_clauses[] = "$key = :$key";
+    $where_args[":$key"] = $value;
+  }
+  $sql .= implode($where_clauses, ' AND ');
+
+  $result = chado_query($sql, $where_args)->fetchObject();
+  if ($result->count > 0) {
+    return $result->max_rank;
+  }
+  else {
+    return -1;
+  }
+
+}
+
+/**
+ * Retrieve a property for a given base table record
+ *
+ * @param $basetable
+ *   The base table for which the property should be retrieved. Thus to retrieve a property
+ *   for a feature the basetable=feature and property is retrieved from featureprop
+ * @param $record_id
+ *   The foriegn key field of the base table. This should be in integer.
+ * @param $property
+ *   The cvterm name describing the type of properties to be retrieved
+ * @param $cv_name
+ *   The name of the cv that the above cvterm is part of
+ *
+ * @return
+ *   An array in the same format as that generated by the function
+ *   chado_generate_var().  If only one record is returned it
+ *   is a single object.  If more than one record is returned then it is an array
+ *   of objects
+ *
+ * @ingroup tripal_chado_api
+ */
+function chado_get_property($basetable, $record_id, $property, $cv_name, $property_id = FALSE) {
+  // get the foreign key for this property table
+  $table_desc = chado_get_schema($basetable . 'prop');
+  $fkcol = key($table_desc['foreign keys'][$basetable]['columns']);
+
+  // construct the array of values to be selected
+  $values = array(
+    $fkcol => $record_id,
+    'type_id' => array(
+      'cv_id' => array(
+        'name' => $cv_name,
+      ),
+      'name' => $property,
+      'is_obsolete' => 0
+    ),
+  );
+  // if we have the unique property_id make sure to add that to the values
+  if ($property_id) {
+    $property_pkey = $table_desc['primary key'][0];
+    $values[$property_pkey] = $property_id;
+  }
+  $results = chado_generate_var($basetable . 'prop', $values);
+  if ($results) {
+    $results = chado_expand_var($results, 'field', $basetable . 'prop.value');
+  }
+
+  return $results;
+}
+
+/**
+ * Insert a property for a given base table.  By default if the property already
+ * exists a new property is added with the next available rank.  If
+ * $update_if_present argument is specified then the record will be updated if it
+ * exists rather than adding a new property.
+ *
+ * @param $basetable
+ *   The base table for which the property should be inserted. Thus to insert a property
+ *   for a feature the basetable=feature and property is inserted into featureprop
+ * @param $record_id
+ *   The foriegn key value of the base table. This should be in integer.
+ * @param $property
+ *   The cvterm name describing the type of properties to be inserted
+ * @param $cv_name
+ *   The name of the cv that the above cvterm is part of
+ * @param $value
+ *   The value of the property to be inserted (can be empty)
+ * @param $update_if_present
+ *   A boolean indicating whether an existing record should be updated. If the
+ *   property already exists and this value is not specified or is zero then
+ *   a new property will be added with the next largest rank.
+ *
+ * @return
+ *   Return True on Insert/Update and False otherwise
+ *
+ * @ingroup tripal_chado_api
+ */
+function chado_insert_property($basetable, $record_id, $property,
+$cv_name, $value, $update_if_present = 0) {
+
+  // first see if the property already exists, if the user want's to update
+  // then we can do that, but otherwise we want to increment the rank and
+  // insert
+  $props = chado_get_property($basetable, $record_id, $property, $cv_name);
+  if (!is_array($props) and $props) {
+    $props = array($props);
+  }
+
+  $rank = 0;
+  if (count($props) > 0) {
+    if ($update_if_present) {
+      return chado_update_property($basetable, $record_id, $property, $cv_name, $value);
+    }
+    else {
+      // iterate through the properties returned and check to see if the
+      // property with this value already exists if not, get the largest rank
+      // and insert the same property but with this new value
+      foreach ($props as $p) {
+        if ($p->rank > $rank) {
+          $rank = $p->rank;
+        }
+        if (strcmp($p->value, $value) == 0) {
+          return TRUE;
+        }
+      }
+      // now add 1 to the rank
+      $rank++;
+    }
+  }
+
+  // make sure the cvterm exists.  Otherwise we'll get an error with
+  // prepared statements not matching
+  $values = array(
+    'cv_id' => array(
+      'name' => $cv_name,
+    ),
+    'name' => $property,
+  );
+
+  $options = array();
+  $term = chado_select_record('cvterm', array('cvterm_id'), $values, $options);
+  if (!$term or count($term) == 0) {
+    tripal_report_error('tripal_core', TRIPAL_ERROR, "Cannot find property '%prop_name' in vocabulary '%cvname'.",
+    array('%prop_name' => $property, '%cvname' => $cv_name));
+    return FALSE;
+  }
+
+  // get the foreign key for this property table
+  $table_desc = chado_get_schema($basetable . 'prop');
+  $fkcol = key($table_desc['foreign keys'][$basetable]['columns']);
+
+  // construct the array of values to be inserted
+  $values = array(
+    $fkcol => $record_id,
+    'type_id' => array(
+      'cv_id' => array(
+        'name' => $cv_name,
+      ),
+      'name' => $property,
+    ),
+    'value' => $value,
+    'rank' => $rank,
+  );
+
+  $options = array();
+  $result = chado_insert_record($basetable . 'prop', $values, $options);
+  return $result;
+}
+
+/**
+ * Update a property for a given base table record and property name.  This
+ * function should be used only if one record of the property will be present.
+ * If the property name can have multiple entries (with increasing rank) then
+ * use the function named chado_update_propertyID
+ *
+ * @param $basetable
+ *   The base table for which the property should be updated. The property table
+ *   is constructed using  a combination of the base table name and the suffix
+ *   'prop' (e.g. basetable = feature then property tabie is featureprop).
+ * @param $record_id
+ *   The foreign key of the basetable to update a property for. This should be in integer.
+ *   For example, if the basetable is 'feature' then the $record_id should be the feature_id
+ * @param $property
+ *   The cvterm name of property to be updated
+ * @param $cv_name
+ *   The name of the cv that the above cvterm is part of
+ * @param $value
+ *   The value of the property to be inserted (can be empty)
+ * @param $insert_if_missing
+ *   A boolean indicating whether a record should be inserted if one doesn't exist to update
+ *
+ * Note: The property to be updated is select via the unique combination of $record_id and
+ * $property and then it is updated with the supplied value
+ *
+ * @return
+ *   Return True on Update/Insert and False otherwise
+ *
+ * @ingroup tripal_chado_api
+ */
+function chado_update_property($basetable, $record_id, $property,
+$cv_name, $value, $insert_if_missing = FALSE, $property_id = FALSE) {
+
+  // first see if the property is missing (we can't update a missing property
+  $prop = chado_get_property($basetable, $record_id, $property, $cv_name, $property_id);
+  if (count($prop)==0) {
+    if ($insert_if_missing) {
+      return chado_insert_property($basetable, $record_id, $property, $cv_name, $value);
+    }
+    else {
+      return FALSE;
+    }
+  }
+
+  // get the foreign key for this property table
+  $table_desc = chado_get_schema($basetable . 'prop');
+  $fkcol = key($table_desc['foreign keys'][$basetable]['columns']);
+
+  // construct the array that will match the exact record to update
+  $match = array(
+    $fkcol => $record_id,
+    'type_id' => array(
+      'cv_id' => array(
+        'name' => $cv_name,
+      ),
+      'name' => $property,
+    ),
+  );
+  // If we have the unique property_id, make sure to use it in the match to ensure
+  // we get the exact record. Doesn't rely on there only being one property of that type
+  if ($property_id) {
+    $property_pkey = $table_desc['primary key'][0];
+    $match = array(
+      $property_pkey => $property_id
+    );
+  }
+
+  // construct the array of values to be updated
+  $values = array(
+    'value' => $value,
+  );
+  // If we have the unique property_id then we can also update the type
+  // thus add it to the values to be updated
+  if ($property_id) {
+    $values['type_id'] = array(
+      'cv_id' => array(
+        'name' => $cv_name,
+      ),
+      'name' => $property,
+    );
+  }
+
+  return chado_update_record($basetable . 'prop', $match, $values);
+}
+
+/**
+ * Deletes a property for a given base table record using the property name
+ *
+ * @param $basetable
+ *   The base table for which the property should be deleted. Thus to deleted a property
+ *   for a feature the basetable=feature and property is deleted from featureprop
+ * @param $record_id
+ *   The primary key of the basetable to delete a property for. This should be in integer.
+ * @param $property
+ *   The cvterm name describing the type of property to be deleted
+ * @param $cv_name
+ *   The name of the cv that the above cvterm is part of
+ *
+ * Note: The property to be deleted is select via the unique combination of $record_id and $property
+ *
+ * @return
+ *   Return True on Delete and False otherwise
+ *
+ * @ingroup tripal_chado_api
+ */
+function chado_delete_property($basetable, $record_id, $property, $cv_name) {
+
+  // get the foreign key for this property table
+  $table_desc = chado_get_schema($basetable . 'prop');
+  $fkcol = key($table_desc['foreign keys'][$basetable]['columns']);
+
+  // construct the array that will match the exact record to update
+  $match = array(
+    $fkcol => $record_id,
+    'type_id' => array(
+      'cv_id' => array(
+        'name' => $cv_name,
+      ),
+      'name' => $property,
+    ),
+  );
+
+  return chado_delete_record($basetable . 'prop', $match);
+}
+
+/**
+ * Get all records with a given property.
+ *
+ * @param $basetable
+ *   The base table for which variables should be generated.
+ * @param $property
+ *   An array/object describing the property to select records for. It should at least
+ *   have either a type_name (if unique across cvs) or type_id. Other supported keys
+ *   include: cv_id/cv_name (of the type), value and rank
+ * @param $record
+ *   An array/object describing the base table record. This can be used to restrict the
+ *   base table records returned to a given type or organism
+ * @param $options
+ *   An array of options. Supported keys include:
+ *     - Any keys supported by chado_generate_var(). See that function definition for
+ *       additional details.
+ *
+ * @return
+ *   An array of chado variables with the given property
+ *
+ * @ingroup tripal_chado_api
+ */
+function chado_get_record_with_property($basetable, $property, $record = array(), $options = array()) {
+  $property_table = $basetable . 'prop';
+  $foreignkey_name = $basetable . '_id';
+
+  // Get paramters in the correct format
+  if (is_array($property)) {
+    $property = (object) $property;
+  }
+  if (is_object($record)) {
+    $record = (array) $record;
+  }
+
+  // Check parameters
+  if (!isset($property->type_name) AND !isset($property->type_id)) {
+    tripal_report_error('chado_api', TRIPAL_ERROR,
+      "chado_get_record_with_property: You must identify the type of property you want to
+       select records for by supplying either a type_name or type_id. You identified the
+       property as %prop.",
+      array('%prop'=> print_r($property, TRUE))
+    );
+  }
+
+  // Build the select values array based on the type
+  if (isset($property->type_name)) {
+    $values = array();
+    $values['type_id'] = array(
+      'name' => $property->type_name
+    );
+
+    // If the cv is set, add that too
+    if (isset($property->cv_name)) {
+      $values['type_id']['cv_id']['name'] = $property->cv_name;
+    }
+    elseif (isset($property->cv_id)) {
+      $values['type_id']['cv_id'] = $property->cv_id;
+    }
+  }
+  elseif ($property->type_id) {
+    $values = array('type_id' => $property->type_id);
+  }
+
+  // Add the value and rank to values array if present
+  if (isset($property->value)) {
+    $values['value'] = $property->value;
+  }
+  if (isset($property->rank)) {
+    $values['rank'] = $property->rank;
+  }
+
+  // Add the record details to the values array
+  if (!empty($record)) {
+    $values[$foreignkey_name] = $record;
+  }
+
+  // Now select the ids of the properties that match
+  $select = chado_select_record($property_table, array($foreignkey_name), $values);
+
+  // For each of these ids, pull out the full base records
+  $records = array();
+  foreach ($select as $s) {
+    $id = $s->{$foreignkey_name};
+    $values = array($foreignkey_name => $id);
+    $records[$id] = chado_generate_var($basetable, $values, $options);
+  }
+
+  return $records;
+}

@@ -1,0 +1,83 @@
+<?php
+/**
+ * @file
+ * Implements hooks from the Schema API
+ */
+
+/**
+ * Implements hook_disable().
+ * Disable default views when module is disabled
+ *
+ * @ingroup tripal_natural_diversity
+ */
+function tripal_natural_diversity_disable() {
+
+  // Disable all default views provided by this module
+  require_once("tripal_natural_diversity.views_default.inc");
+  $views = tripal_natural_diversity_views_default_views();
+  foreach (array_keys($views) as $view_name) {
+    tripal_views_admin_disable_view($view_name,FALSE,array('suppress_error' => TRUE));
+  }
+
+}
+
+/**
+ * Implementation of hook_requirements().
+ *
+ * @ingroup tripal_natural_diversity
+ */
+function tripal_natural_diversity_requirements($phase) {
+  $requirements = array();
+  if ($phase == 'install') {
+    // make sure chado is installed
+    if (!$GLOBALS["chado_is_installed"]) {
+      $requirements ['tripal_natural_diversity'] = array(
+        'title' => "tripal_natural_diversity",
+        'value' => "ERROR: Chado must be installed before this module can be enabled",
+        'severity' => REQUIREMENT_ERROR,
+      );
+    }
+  }
+  return $requirements;
+}
+
+/**
+ * Implementation of hook_install().
+ *
+ * @ingroup tripal_natural_diversity
+ */
+function tripal_natural_diversity_install() {
+
+  // create the module's data directory
+  tripal_create_files_dir('tripal_natural_diversity');
+
+  // add cvterms
+  tripal_natural_diversity_add_cvterms();
+
+}
+
+/**
+ * Implementation of hook_uninstall().
+ *
+ * @ingroup tripal_natural_diversity
+ */
+function tripal_natural_diversity_uninstall() {
+
+}
+
+/**
+ * Add cvterms related to natural diversity
+ *
+ * @ingroup tripal_natural_diversity
+ */
+function tripal_natural_diversity_add_cvterms(){
+
+  // add cvterms for the nd_experiment_types
+  tripal_cv_add_cvterm(array('name' => 'Genotyping','def' => 'An experiment where genotypes of individuals are identified.'),
+    'nd_experiment_types', 0, 1, 'tripal');
+  tripal_cv_add_cvterm(array('name' => 'Phenotyping','def' => 'An experiment where phenotypes of individuals are identified.'),
+    'nd_experiment_types', 0, 1, 'tripal');
+
+  tripal_cv_add_cvterm(array('name' => 'Location','def' => 'The name of the location.'),
+    'nd_geolocation_property', 0, 1, 'tripal');
+}
